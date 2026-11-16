@@ -450,3 +450,322 @@ Primary mission/product documentation and dataset maintainers are preferred. The
 | [14] | [PyTorch: Reproducibility](https://docs.pytorch.org/docs/stable/notes/randomness.html) | Deterministic algorithm controls and cross-platform/version reproducibility limitations. |
 
 Some primary pages were available through indexed web search but could not be fetched directly from the research environment. No live acquisition, vendor SLA, model accuracy, timing benchmark, or end-to-end deployment has been verified by this documentation exercise.
+
+## 12. Architecture & Blueprint Selection by Scenario
+
+This section extends the reference architecture with three **proposed implementation blueprints**. They share ingestion, provenance, quality control, and advisory delivery, but require different physical measurements and processing branches. Architecture selection must begin with the operational question, not with a preferred AI model.
+
+### 12.1 Selection guide
+
+| Scenario | Primary measurement and input | Select this blueprint when | Processing and delivery pattern | Do not substitute |
+|---|---|---|---|---|
+| Rapid Disaster Response: Flood & Damage Mapping | Calibrated GRD/RTC backscatter and compatible pre-event references; optional SLC-derived coherence | Responders need event-water extent, candidate damage/change areas, and asset/access exposure after an incident | Event-triggered, parallel area-of-interest processing; separate flood and damage-screening heads; versioned emergency map releases | A dark-pixel mask for a validated flood product, or a change map for confirmed structural damage |
+| Maritime Security: Dark Vessel & Oil Spill Detection | Calibrated sea-surface intensity, acquisition geometry, AIS observations, wind and ocean context | Maritime analysts need vessel candidates, unexplained AIS non-matches, or suspected surface pollution | Acquisition-triggered dual detection branches, event-time track association, analyst case management | Missing AIS for proof of wrongdoing, or dark water for confirmed oil |
+| Infrastructure Protection: Deformation & Stability Monitoring | Compatible phase-preserving SLC/CSLC stacks, or qualified displacement products | Engineers need repeatable movement trends around towers, foundations, slopes, pipelines, ducts, or other assets | Stateful, historical time-series processing; quality-gated anomaly detection; engineering review | GRD/RTC intensity for interferometric phase, or line-of-sight displacement for full 3D structural movement |
+
+**Blueprint selection rules:**
+
+1. If the question is **where surface water or surface change is visible now**, choose the disaster blueprint; retain uncertainty and acquisition-time limitations.
+2. If the question is **what vessel-like or slick-like features are visible at sea**, choose the maritime blueprint; identity association and pollution interpretation are separate tasks.
+3. If the question is **whether a coherent target is moving over successive acquisitions**, choose the infrastructure blueprint; first establish whether the historical stack and geometry support that measurement.
+4. If an event spans scenarios, run the relevant branches independently and fuse their evidence at the asset/case layer. For example, flood exposure and foundation displacement are different observations, not interchangeable confidence scores.
+
+All three blueprints use the reliability requirements in Section 6.1 and the decision-contract principles in Section 8.1. Service objectives, resource sizing, model thresholds, and freshness policies must be established through local benchmarking and operational approval; none below is a measured SLA.
+
+### 12.2 Rapid Disaster Response (Flood & Damage Mapping)
+
+#### 1. Objective
+
+Produce an acquisition-time picture of newly observed inundation and candidate disaster-related surface change, then identify exposed communities, emergency-service facilities, communication assets, power dependencies, and restoration access routes.
+
+Separate the deliverables into **flood extent**, **damage/change screening**, and **operational exposure**. They answer different questions and require separate quality indicators.
+
+| Operational question | Deliverable | Decision supported | Boundary |
+|---|---|---|---|
+| Where is event water visible beyond normal water conditions? | Event-water class/probability raster, permanent-water layer, uncertainty and valid-coverage masks | Prioritize reconnaissance, pumping, protection, and response planning | Extent alone does not measure depth, flow, contamination, or route passability |
+| Where has the surface changed after the incident? | Candidate change polygons with intensity/coherence evidence and event context | Target imagery review and field inspection | Change does not uniquely establish structural damage or its cause |
+| Which facilities and dependencies intersect that evidence? | Footprint/route exposure summaries, shared-risk dependencies, prioritized inspection list | Protect power and backhaul; stage portable coverage | Exposure is not confirmation of service outage |
+| What changed since the previous release? | Versioned map differences, acquisition intervals, additions/retractions and coverage changes | Update a common operating picture without hiding revisions | A new model version or newly valid coverage is not necessarily a physical change |
+
+The response lead owns incident priorities; the geospatial analyst owns map qualification; network operators and field teams confirm service impact and access conditions. Define the AOI, incident window, map scale, acceptable missed critical assets, review authority, and maximum evidence age before activation.
+
+#### 2. The Physics
+
+Smooth open water often reflects radar energy away from the sensor and therefore appears dark. Flooding can cause a marked reduction in backscatter relative to compatible pre-event imagery. This is a useful mechanism, not a universal flood signature. SAR scattering and product distinctions are described in Sections 3.1-3.5 and sources [1][2][5].
+
+| Physical effect | Observable evidence | Design consequence |
+|---|---|---|
+| Specular reflection from smooth water | Low return, often with a pre/post intensity decrease | Combine backscatter, temporal change, terrain, and permanent-water context rather than using one global threshold |
+| Wind-roughened water | Higher return than calm water | Evaluate wind/exposure conditions and avoid equating bright water with dry land |
+| Urban or vegetation-water double bounce | Flooded targets may become brighter, depending on geometry and canopy/structure | Evaluate urban and vegetated flood classes separately; consider multi-date/polarization evidence and abstain where unsupported |
+| Wet soil and changing vegetation | Intensity changes unrelated to standing water | Use seasonal references, land-cover context, rainfall information, and representative negative examples |
+| Shadow, layover, and terrain distortion | Dark or geometrically mixed areas unrelated to inundation | Retain geometry masks and unknown classes; DEM correction cannot recover hidden surfaces |
+| Structural or land-surface disturbance | Changes in intensity, texture, or SLC-derived coherence | Maintain a separate change-screening branch; account for vegetation, moisture, acquisition interval, and viewing geometry |
+
+For matched linear-power images, a useful feature is `10 * log10(P_post / P_reference)`; equivalently, subtract consistently defined dB backscatter images. Mask zero/invalid inputs and compare equivalent calibration, geometry, and preprocessing. A large negative change can support open-water interpretation, but is neither a universal threshold nor proof of flooding.
+
+Coherence loss can support disturbance screening only when compatible SLC pairs and a meaningful pre-event coherence baseline exist. Coherence also changes with vegetation, water, temporal separation, noise, and co-registration quality. GRD products do not contain the phase required to derive interferometric coherence.
+
+#### 3. The Architecture
+
+**Recommended blueprint: event-driven raster analysis with two independent inference heads and an asset-aware advisory layer.**
+
+```text
+Incident activation / catalog reconciliation
+    -> AOI + acquisition/baseline compatibility checks
+    -> immutable GRD/RTC store ------------------------------+
+    -> calibrated, aligned intensity tiles                  |
+         |-> flood baseline + segmentation -> water evidence|
+         `-> pre/post change detector ------> change evidence|
+                                                            v
+Optional compatible SLC stack -> coherence processing -> evidence quality gate
+                                                            |
+DEM / water history / assets / roads / field reports -> spatial fusion
+                                                            |
+                                versioned maps + inspection recommendations
+                                                            |
+                                    analyst approval -> response/NOC delivery
+```
+
+The diagram represents logical services, not mandatory individual microservices. A small deployment can use one orchestrated batch pipeline with durable checkpoints; scale out tile workers only when AOI size and delivery budgets justify it.
+
+| Component | Design detail |
+|---|---|
+| Activation and scheduler | Store incident ID, AOI version, event window and priority; search archives for compatible references; reconcile new scenes and publish explicit acquisition/coverage gaps |
+| Preprocessing workers | Follow Section 3.5; cache DEM/reference mosaics; preserve tile halos and masks; treat SLC/coherence processing as a distinct optional path |
+| Flood model | Begin with threshold/change baselines; compare a U-Net-style segmentation or temporal model using supported VV/VH channels, reference/current backscatter, and qualified contextual features |
+| Damage-screening model | Begin with intensity/coherence change statistics; evaluate a Siamese or temporal model only with temporally aligned, event-specific change/damage labels; do not relabel an unvalidated change score as damage probability |
+| Spatial fusion | Join results to full asset footprints and physical routes with position/boundary uncertainty; propagate shared power, transport and backhaul exposure through the dependency graph |
+| Publication | Store COG rasters and vector exposure layers, source manifests, model/policy versions, and analyst dispositions; issue corrections when a release is superseded |
+| Surge handling | Prioritize critical AOIs, bound tile queues and retries, checkpoint completed work, and expose partial coverage instead of presenting incomplete maps as complete |
+
+**AI insight design:** use separate output heads/contracts for `event_water`, `candidate_surface_change`, and `asset_exposure`. Inputs must distinguish permanent water, event water, non-water, and unknown. A flood probability is meaningful only if calibrated on the relevant sensor, event types, and terrain; it must not become an outage or damage probability through a spatial join.
+
+For each recommendation, retain the asset footprint/inventory version, observed overlap fraction over valid coverage, unknown footprint fraction, observation time, baseline age, model quality, and corroborating telemetry. Record reason codes such as `NEW_WATER_OVERLAP`, `COMMON_CAUSE_BACKHAUL_EXPOSURE`, or `POST_EVENT_CHANGE_REVIEW`. Criticality can raise inspection priority without changing the model's physical hazard probability.
+
+Train and evaluate by held-out events/geographies, with dedicated urban, vegetated, coastal and mountainous subsets. Sen1Floods11 can support flood research [11]; it does not supply universal damage labels. Optical-only damage data such as SpaceNet 8 [12] needs a separately justified multimodal/label-alignment design rather than being treated as SAR imagery.
+
+#### 4. The workflow
+
+1. **Activate and define the decision.** Register the disaster footprint/time, decision owners, critical assets, observation-age policy, release criteria, and authoritative incident reports.
+2. **Select current and reference observations.** Match orbit, polarization, mode, geometry and processing; use representative seasonal/pre-event references. Record insufficient references as a limitation rather than silently selecting incompatible imagery.
+3. **Generate analysis-ready inputs.** Calibrate and terrain-correct as appropriate, align grids, apply masks, and retain valid coverage. Generate coherence only through a qualified compatible SLC path.
+4. **Infer water and screen change separately.** Run each against its simple baseline; retain per-pixel uncertainty/abstention, permanent-water distinctions, model versions and seam handling.
+5. **Apply physical plausibility and quality checks.** Review terrain, water connectivity where appropriate, urban scattering, missing tiles and implausible boundaries. Connectivity is supporting context, not a rule that erases isolated genuine flooding.
+6. **Create asset/dependency insights.** Calculate valid-area exposure and shared-corridor risks; add outage/power telemetry with its own timestamps. Produce inspection and deployment candidates, not an assertion that an unflagged route is safe.
+7. **Review and release.** Have the authorized analyst qualify the map, uncertainty and coverage; distribute versioned layers and evidence-linked recommendations. Preserve the difference between preliminary automated output and approved operational maps.
+8. **Refresh and reconcile.** Reprocess new scenes and corrections, compare only compatible versions, expire stale recommendations, and collect field/outage dispositions for offline evaluation.
+
+**Acceptance evidence:** measure per-event flood precision/recall/IoU on valid labeled areas, critical-asset exposure misses, false inspections, unknown coverage, change-screening accuracy against independent event labels, map geolocation/boundary error, and acquisition/publication-to-release latency. Establish release thresholds with responders; report the acquisition wait separately from local processing time.
+
+### 12.3 Maritime Security (Dark Vessel & Oil Spill Detection)
+
+#### 1. Objective
+
+Detect vessel-like targets and suspected oil slicks in a maritime AOI, associate vessel observations with available reporting data, and provide prioritized, evidence-linked cases to authorized maritime analysts.
+
+Here, **dark-vessel candidate** means a vessel-like SAR detection with no reliable match in the available AIS data under a documented association policy. It is not a determination that a vessel deliberately disabled AIS, violated reporting rules, or committed an offense.
+
+| Operational question | Deliverable | Decision supported | Boundary |
+|---|---|---|---|
+| What vessel-like targets are visible? | Geolocated detections with localization uncertainty, footprint estimates and quality flags | Surveillance review and follow-up collection | Detection and approximate dimensions depend on resolution, sea state, geometry and vessel construction |
+| Which detections lack a trustworthy AIS association? | Matched, ambiguous, unmatched, or insufficient-AIS association status | Investigate unexplained observations | Receiver gaps, stale messages, non-equipped vessels and timing errors can produce non-matches |
+| Which surface features are consistent with an oil slick? | Suspected-slick polygons, confidence/quality, environmental context and look-alike indicators | Direct authorized verification and response planning | SAR does not identify oil chemistry or reliably derive spill thickness/volume from dark intensity alone |
+| Is there evidence worth reviewing for a possible source? | Candidate vessel/track associations with temporal and drift uncertainty | Analyst reconstruction of possible events | Proximity or an apparent trailing feature does not establish responsibility |
+
+EMSA's CleanSeaNet provides operational context for satellite-based oil-spill and vessel detection, supporting data, and follow-up by authorities. It is evidence for the capability class, not validation of the AI models or integration proposed here. See [M1][M2] below.
+
+#### 2. The Physics
+
+Vessels can produce strong returns from metallic structures, corners and multiple reflections, appearing as bright targets against sea clutter. Small or low-reflectivity craft may not be detectable. Sea clutter varies with wind, waves, incidence angle, polarization and noise; one brightness threshold cannot maintain the same false-alarm rate everywhere.
+
+Oil films can damp the short surface waves that contribute to microwave backscatter, creating dark slick-like regions relative to surrounding water. Detectability requires sufficient contrast: calm water can already be dark, while rough weather and breaking waves can obscure or disperse the signature. Product-specific and locally validated environmental applicability limits are necessary; do not hard-code an unsupported universal wind interval. [M1][M2]
+
+| Effect or ambiguity | Consequence for design |
+|---|---|
+| Variable ocean clutter | Estimate local background statistics; evaluate by sea state, incidence angle and coastal/open-ocean setting |
+| Small vessels, weak reflectors, crowding | Report resolution-limited detectability and merged targets; output apparent dimensions with uncertainty rather than exact hull dimensions |
+| SAR imaging of moving targets | Motion can shift or smear an apparent target location; include motion/geolocation uncertainty when matching to AIS |
+| Coastal structures, platforms, rocks and bright artifacts | Use shoreline/fixed-object context and dedicated hard negatives; preserve coastal review paths so masking does not simply hide real nearshore vessels |
+| Low-wind zones, biogenic films, rain cells, fronts and wakes | Treat dark patches as candidates requiring environmental context and look-alike discrimination |
+| Surface transport after release | Keep acquisition time explicit; use a separate current/wind-driven drift model for forecasts and source hypotheses, not a pixel-based certainty claim |
+
+AIS supplies cooperative position reports, not a complete or infallible inventory. SAR-to-AIS association must account for message time, reception coverage, position accuracy, plausible vessel motion and potentially unreliable identifiers. Radar observations and AIS assertions must retain separate provenance.
+
+#### 3. The Architecture
+
+**Recommended blueprint: dual maritime detectors with event-time association, environmental fusion, and analyst-controlled case management.**
+
+```text
+SAR catalog -> calibrated sea-surface intensity + geometry + quality masks
+                         |                              |
+                 vessel detector                 slick segmenter
+                         |                              |
+AIS history -> event-time association        wind / sea state / currents
+                         |                              |
+             matched / ambiguous /          look-alike assessment +
+             unmatched / insufficient AIS   suspected-slick evidence
+                         |                              |
+                         +---- evidence/case fusion ----+
+                                       |
+                         analyst review + authorized verification
+                                       |
+                           maritime operations advisory
+```
+
+Use the common ingestion/storage infrastructure, but do not assume the land-focused flood RTC preprocessing, masks or training statistics are appropriate for the sea. Retain the calibration, incidence-angle, noise, geolocation and radiometric conventions required by the selected maritime product and model.
+
+| Component | Design detail |
+|---|---|
+| Vessel baseline and model | Start with a locally validated constant false alarm rate (CFAR) detector; compare an object detector or instance-segmentation model for targets and crowded/coastal cases |
+| Slick baseline and model | Start with local dark-region segmentation and interpretable shape/contrast/context features; compare a segmentation model plus a separately validated look-alike classifier |
+| AIS event-time store | Retain report and ingestion timestamps, receiver/coverage provenance, quality and identifier history; support bounded waiting/reconciliation for late messages |
+| Association engine | Propagate eligible tracks to acquisition time within bounded gaps, gate candidates using uncertainty, and resolve competing matches; do not force nearest-neighbor identity assignments |
+| Environmental fusion | Join time/space-matched wind, sea state, currents, coastline and fixed-object context; label missing/stale context and widen uncertainty or abstain as required |
+| Case store | Keep detections, association hypotheses, suspected slicks, revisions, evidence references, reviewer decisions and verification results; preserve ambiguous alternatives |
+| Delivery | Publish observations at acquisition time and separate forecast layers; issue case updates/retractions rather than repeated independent accusations |
+
+**AI insight design:** keep three model/logic products distinct: vessel detection confidence, AIS-association confidence/status, and suspected-slick confidence. None is automatically a probability of illegal activity. If calibration is unavailable, publish a score with its evaluation context instead of labeling it a probability.
+
+A vessel case should include `detection_id`, acquisition time, geometry/position uncertainty, model version, quality flags, association window, AIS coverage status, candidate match identifiers and scores where permitted, association state, and analyst disposition. A slick case should include polygon area in an appropriate CRS, contrast/shape evidence, wind/context age, look-alike indicators, valid coverage, and `verification_status`. Do not populate chemistry, thickness, volume, identity, or liability fields from unsupported inference.
+
+Use hard-negative training cases from platforms, ports, islands, breaking waves, rain and low-wind water. Split validation by region, acquisition period, sensor, vessel track and pollution incident to reduce leakage. AIS absence is not a valid vessel-negative label; an unverified dark patch is not a confirmed oil-positive label. Require independent expert annotations and follow-up evidence where available.
+
+#### 4. The workflow
+
+1. **Define surveillance intent and authority.** Register the AOI, authorized users, lawful data access, target detectability requirements, environmental limits and follow-up owner.
+2. **Ingest SAR, AIS and environmental context.** Preserve acquisition versus message/ingestion times, reception coverage, source quality and missing-data states. Reject unsupported modes or resolutions visibly.
+3. **Prepare maritime imagery.** Apply product-appropriate calibration/noise handling and geolocation; retain incidence-angle/context layers and carefully qualified coastal/fixed-object masks.
+4. **Run independent vessel and slick branches.** Detect vessel-like targets against local clutter and segment slick-like regions; retain branch-specific uncertainty and invalid/environmentally unsuitable regions.
+5. **Associate vessels at event time.** Use bounded track interpolation or propagation with growing uncertainty; resolve candidate conflicts. Publish `insufficient_AIS` when the feed cannot support an absence claim, and `ambiguous` when multiple associations remain plausible.
+6. **Assess suspected pollution.** Evaluate contrast, morphology, local wind/sea state and look-alikes. If source review is required, use time-aware tracks and a validated drift model with uncertainty; do not infer responsibility from nearest-vessel proximity.
+7. **Open an evidence-linked case.** Present the image chip, wider context, uncertainty, source ages, association alternatives and reason codes such as `SAR_VESSEL_NO_RELIABLE_AIS_MATCH` or `SLICK_LIKE_FEATURE_REQUIRES_VERIFICATION`.
+8. **Verify and reconcile.** Authorized analysts request appropriate corroboration or inspection. Update match states as late AIS arrives, preserve history, and record confirmed/rejected/inconclusive pollution findings independently of the original model score.
+
+**Acceptance evidence:** report vessel precision/recall by vessel size and sea state, false alarms per unit of valid searched sea area, geolocation error, AIS match accuracy/ambiguity, performance under receiver gaps, slick object/pixel precision-recall, area error and look-alike false alarms. Measure analyst workload, verification yield, acquisition-to-case latency and correction latency. No universal detection accuracy or delivery interval is assumed.
+
+### 12.4 Infrastructure Protection (Deformation & Stability Monitoring)
+
+#### 1. Objective
+
+Identify persistent or changing ground/target movement around critical infrastructure and prioritize engineering investigation before a potentially consequential condition is overlooked.
+
+Applicable assets include tower foundations, communication shelters, fiber/utility corridors, embankments, bridges, dams, ports and industrial sites, subject to observability and engineering context. A radar scatterer near an asset is not necessarily on that asset, and an asset smaller than the effective spatial support may not be separable from its surroundings.
+
+| Operational question | Deliverable | Decision supported | Boundary |
+|---|---|---|---|
+| Is the observed target moving relative to the reference? | Referenced line-of-sight displacement series, velocity and quality | Rank surveys and compare with known regional trends | Relative radar displacement is not automatically vertical settlement |
+| Has behavior changed? | Trend/change-point evidence, persistence and uncertainty | Request geotechnical review or increased instrumentation | An anomaly score does not establish structural instability or predict failure time |
+| Are adjacent parts of a corridor moving differently? | Differential movement over defined distances with spatial support/uncertainty | Investigate potential strain-sensitive segments | Surface movement is not a direct measurement of buried pipe/fiber strain |
+| Which communication dependencies could be affected? | Asset-linked movement evidence plus criticality and live telemetry | Coordinate inspection and resilience planning | SAR alone does not confirm equipment, foundation or service failure |
+
+Asset engineers define investigation criteria using design, soil, loading, consequence and instrument context. Safety-critical alarms and closures must remain supported by independently qualified monitoring and approved procedures; satellite revisit cannot replace continuous structural sensing.
+
+#### 2. The Physics
+
+InSAR compares phase from compatible, precisely co-registered complex acquisitions. A conceptual phase budget is:
+
+```text
+observed phase difference =
+    geometric/topographic contribution
+  + deformation contribution
+  + atmospheric/ionospheric contribution
+  + orbit/DEM residuals
+  + scattering/noise terms
+  (observed modulo 2*pi before unwrapping)
+```
+
+After appropriate corrections and unwrapping, deformation phase can be converted to line-of-sight displacement using wavelength and the processor's signed convention. Section 3.6 describes the phase-preserving chain; [8][9] provide implementation context.
+
+| Physical constraint | Architectural consequence |
+|---|---|
+| Phase discarded in GRD/intensity RTC | Start with compatible SLC/CSLC or a qualified displacement product; no AI model can reconstruct the missing observed phase from intensity |
+| Temporal/spatial decorrelation | Mask unreliable observations and retain disconnected components; a gap is unknown movement, not stability |
+| Wrapped phase and unwrapping errors | Check interferogram-network consistency, connected components, residuals and abrupt discontinuities before interpreting trends |
+| Atmospheric delay, including terrain-correlated signals | Apply suitable corrections and spatial/temporal checks; compare with independent ground measurements rather than trusting a smooth fitted trend |
+| Reference dependence | Record reference region/point, epoch and stability evidence; changing the reference changes the reported relative series |
+| Line-of-sight projection | Publish LOS geometry and sign; ascending/descending data can support selected component estimates under assumptions, not unconstrained 3D recovery |
+| Layover, shadow and mixed scattering | Document actual observable targets and spatial support; nearby radar measurements cannot automatically be assigned to a specific foundation |
+| Rapid motion between observations | Aliasing, decorrelation and unwrapping failure may prevent reliable recovery; lack of a measured anomaly cannot establish safety |
+
+Persistent-scatterer approaches suit sufficiently stable individual radar targets; small-baseline time-series approaches can exploit suitable distributed/coherent areas. These are selection principles, not mutually exclusive products: choose the processor and strategy after assessing target density, land cover, temporal/perpendicular baselines, geometry and independent validation. No universal minimum scene count guarantees a reliable trend.
+
+#### 3. The Architecture
+
+**Recommended blueprint: stateful InSAR time-series processing with a separate engineering anomaly and decision layer.**
+
+```text
+Compatible SLC/CSLC archive + new acquisitions
+    -> orbit / DEM / burst-aware co-registration
+    -> interferogram network + coherence
+    -> correction / unwrapping / consistency checks
+    -> referenced time-series inversion + uncertainty
+    -> quality-controlled target/region evidence store
+                          |
+GNSS / leveling / tilt / weather / engineering asset model
+                          |
+          robust trends + qualified anomaly detector
+                          |
+         engineering review -> inspection recommendation
+                          |
+             field findings + versioned reassessment
+```
+
+A qualified provider displacement product may enter at the time-series evidence layer after reference, coverage, units, quality and compatibility checks. It is an alternative upstream implementation, not permission to skip provenance or independent validation.
+
+| Component | Design detail |
+|---|---|
+| Stack manager | Track relative orbit, burst overlap, mode, polarization, reference epoch, baseline network, orbit/DEM versions and coherent coverage |
+| Phase-processing workers | Use a validated processor such as ISCE with appropriate mission support; cache reusable pair products; isolate memory/I/O-heavy jobs from low-latency advisory services |
+| Time-series processor | Use an appropriate inversion/correction workflow such as MintPy; retain coherence, residuals, connected components, uncertainty and reference metadata [8][9] |
+| Versioned state | Store the input graph and complete released series; new acquisitions/corrections may revise historical estimates, so publish a new consistent version rather than appending an unexplained final point |
+| Asset association | Associate scatterers/regions with surveyed footprints and geolocation uncertainty; distinguish structure, adjacent ground and background reference targets |
+| Anomaly service | Start with robust trends, engineering-approved limits and change-point tests; add seasonal/state-space or other temporal ML models only if they improve independent validation |
+| Engineering delivery | Display displacement and uncertainty alongside geometry, coverage, sensor corroboration, maintenance history and prior investigations; preserve reviewer authority and audit history |
+
+**AI insight design:** AI consumes quality-controlled displacement observations and context; it should not treat raw wrapped phase as direct movement or silently interpolate unsupported measurements. Candidate features include referenced LOS trend, trend change, differential movement over a defined baseline, seasonal residual, coherence, sampling gaps and independent sensor agreement. Acceleration claims require enough observations and uncertainty analysis; noisy finite differences are not failure forecasts.
+
+Keep `movement_estimate`, `measurement_quality`, `anomaly_score`, and `engineering_priority` separate. Record units, reference epoch/region, LOS vector/sign, observation dates, fit window, target count/spatial support, uncertainty method, processing version and asset-association confidence. An illustrative recommendation is "review sustained relative movement near this foundation and compare with GNSS," not "tower collapse imminent."
+
+Training labels should come from engineer-reviewed movement episodes, maintenance and instrumentation with aligned dates. Hold out entire assets/regions and later time periods; avoid leakage from revised full-series products into historical prediction tests. Run retrospective evaluations using only data and corrections available at each decision time. Unsupervised anomalies require review and cannot be advertised as calibrated failure probabilities.
+
+#### 4. The workflow
+
+1. **Define the engineering question.** Inventory assets and consequence, survey target locations, document expected motion and permissible investigation actions, and establish qualified reference measurements.
+2. **Assess observability and history.** Check compatible archive length, coherent target density, viewing geometry, data gaps and achievable spatial support. Report assets without usable measurements explicitly.
+3. **Build the phase-preserving stack.** Follow Section 3.6 or qualify a provider product; construct a connected interferogram network and retain processing/auxiliary-data versions.
+4. **Generate and qualify the time series.** Correct/invert as appropriate, verify reference stability, inspect unwrapping/network residuals and mask unreliable estimates. Retain uncertainty and disconnected coverage.
+5. **Validate and associate with assets.** Compare against GNSS/leveling or other measurements in compatible geometry/reference/time; distinguish adjacent ground from actual structure observations.
+6. **Detect meaningful changes.** Apply approved trend/persistence rules before optional ML; account for seasonality, irregular sampling, multiple comparisons and uncertainty. Low quality produces an insufficient-evidence state rather than a reassuring zero trend.
+7. **Review and prioritize.** An engineer examines spatial consistency, corroborating instruments, rainfall/temperature/loading and maintenance. Prioritize surveys using consequence and dependencies without relabeling priority as failure probability.
+8. **Refresh with revision control.** Process each usable acquisition, publish series revisions and reference changes, reassess earlier alerts, and collect field outcomes. Instrumented local alarms continue independently between satellite updates.
+
+**Acceptance evidence:** compare LOS displacement/velocity against independent measurements with compatible reference and geometry; report bias, error distributions, uncertainty calibration, coherent coverage and reference sensitivity. Evaluate false investigations per asset/time, missed known movement episodes, detection delay, robustness to gaps/atmosphere/unwrapping errors and workload. Qualify any component decomposition separately; no generic millimeter-accuracy or failure-prediction claim is implied.
+
+### 12.5 Shared AI insight and delivery contract
+
+The common platform should normalize **provenance and decision lifecycle**, not erase scenario-specific measurement meaning. Extend the illustrative contract in Section 8.1 with the following scenario payloads.
+
+| Contract element | Required design |
+|---|---|
+| Identity and time | Stable observation/case/asset IDs, scenario, contributing acquisition interval, ingestion/evaluation times and evidence age; retain per-source timestamps for fusion |
+| Measurement | Typed physical quantity/class, units, geometry/CRS and spatial support; distinguish observed, modeled, forecast and reported evidence |
+| Evidence and quality | Valid/unknown coverage, uncertainty method, calibration status, compatibility flags, environmental limitations and links to source products |
+| Scenario payload | Flood: water/change/exposure layers. Maritime: target/slick geometry and association/verification states. Infrastructure: referenced LOS series, quality and trend evidence |
+| Decision | Versioned reason codes, priority, rule/model versions, reviewer state, recommended action and explicit automation authority |
+| Lifecycle | Support preliminary, approved, stale, insufficient-evidence, failed, superseded and retracted states; source corrections must reach affected cases |
+
+**LLM-assisted explanation design:** generate the authoritative measurement, spatial join, association, trend and policy result using qualified structured services first. An optional LLM can turn that contract into a concise operator narrative with evidence IDs and limitations. Require schema validation and checks that every numerical value, coordinate, identity and claim is supported by the contract; reject unsupported statements rather than silently repairing them into authoritative findings.
+
+Treat free-text reports and retrieved material as untrusted evidence, not execution instructions. Limit retrieval to access-authorized sources, minimize sensitive asset/vessel information, and retain explanation/model provenance. The LLM must not invent oil-spill confirmation, assign liability, declare a route safe, infer structural failure, or set operational thresholds. Missing context should result in an explicit insufficient-evidence explanation.
+
+**Operational separation:** GPU inference may accelerate flood/maritime imagery; InSAR needs its own qualified phase-processing and historical-state resources. Size each workload from representative scenes/stacks, tile counts, intermediate storage and surge behavior. A shared event bus, immutable object store, geospatial database and dashboard are useful; a single universal model or preprocessing graph is not.
+
+### 12.6 Additional maritime sources
+
+These sources supplement Section 11 for the maritime scenario. They describe established service concepts, not measured performance or certification of this proposed blueprint. Relevant material was discoverable through indexed search; direct EMSA page retrieval was unavailable during this update.
+
+| Reference | Source | Supports |
+|---|---|---|
+| [M1] | [EMSA: CleanSeaNet](https://www.emsa.europa.eu/csn-menu.html) and [CleanSeaNet service catalogue](https://emsa.europa.eu/publications/leaflets/download/7509/4962/23.html) | Satellite-based oil-spill and vessel detection, contextual interpretation and follow-up |
+| [M2] | [European Cooperation on Coast Guard Functions: CleanSeaNet oil spill and vessel detection services products](https://coastguard.europa.eu/catalogues/maritime-data-catalogue/601-cleanseanet-oil-spill-and-vessel-detection-services-products) | Maritime detection products, supporting information and operational service context |
