@@ -769,3 +769,27 @@ These sources supplement Section 11 for the maritime scenario. They describe est
 |---|---|---|
 | [M1] | [EMSA: CleanSeaNet](https://www.emsa.europa.eu/csn-menu.html) and [CleanSeaNet service catalogue](https://emsa.europa.eu/publications/leaflets/download/7509/4962/23.html) | Satellite-based oil-spill and vessel detection, contextual interpretation and follow-up |
 | [M2] | [European Cooperation on Coast Guard Functions: CleanSeaNet oil spill and vessel detection services products](https://coastguard.europa.eu/catalogues/maritime-data-catalogue/601-cleanseanet-oil-spill-and-vessel-detection-services-products) | Maritime detection products, supporting information and operational service context |
+
+## 13. SAR Preprocessing Pipeline: Core Prerequisites for AI
+
+Preprocessing must match the SAR product and the model's intended task. There is no single sequence that is correct for every sensor or AI model. First establish which corrections are already present in the source product; do not apply them again blindly. The backscatter workflow in Section 3.5 covers the Sentinel-1 intensity branch, while phase-sensitive InSAR requires the separate workflow in Section 3.6.
+
+### 13.1 Core input checks
+
+Before creating model inputs:
+
+1. **Identify the product and its meaning.** Record the mission, product type and processing level, acquisition mode, polarization, acquisition time, calibration state, units, coordinate reference system, pixel spacing, and available quality/no-data masks. SLC, GRD, and RTC products are not interchangeable; use a phase-preserving SLC workflow for interferometric tasks.
+2. **Apply only relevant source corrections.** For Sentinel-1 GRD, check whether orbit updates and applicable border/thermal-noise corrections are needed, then radiometrically calibrate to the selected backscatter convention. Keep the convention (for example, sigma-nought or gamma-nought) and units explicit.
+3. **Account for terrain and geometry.** Use DEM-based terrain correction when map-geolocated data are required. Radiometric terrain correction/flattening is a separate choice for topographic effects on measured brightness; it is not the same operation as geometric correction.
+4. **Treat speckle filtering as task-dependent.** Speckle is inherent in coherent radar imaging. Filtering or multilooking may reduce it but can also remove spatial detail or change image statistics. Use these operations only when suitable for the task, and keep the preprocessing consistent between training and inference.
+5. **Make scenes comparable.** Align inputs to a documented common map grid and compatible pixel spacing; preserve polarization channels as distinct features unless the model specification explicitly combines them. Carry valid-data, layover/shadow, and other relevant quality masks through the pipeline.
+6. **Match the model's value representation.** Record whether inputs are linear backscatter or in decibels and use the exact representation and normalization expected by the trained model. Do not mix representations or derive normalization separately at inference time.
+7. **Retain provenance.** Store the source product identifiers, processor/version, orbit and DEM versions, corrections and parameters, grid definition, units, polarization order, masks, and model-input transformation with each prepared dataset.
+
+### 13.2 What terrain correction cannot fix
+
+Side-looking radar geometry can produce foreshortening, layover, and radar shadow. DEM-based terrain correction improves the geographic placement of observed returns and accounts for terrain in the projection, but it cannot recreate returns from shadowed areas or make geometrically overlapping layover returns unambiguous. Keep these areas identified in quality masks; do not treat them as ordinary valid observations for model training or inference.
+
+The sequence and optional operations should be selected from the product documentation and processing tool guidance for the chosen mission. In particular, do not assume that every SAR model requires speckle filtering, radiometric terrain flattening, or conversion to decibels.
+
+**Technical references:** [NASA Earthdata SAR Handbook](https://www.earthdata.nasa.gov/learn/earth-observation-data-basics/sar-handbook); [Copernicus Sentinel-1 product guide](https://sentiwiki.copernicus.eu/web/s1-products); [Copernicus Data Space Sentinel-1 documentation](https://documentation.dataspace.copernicus.eu/Data/SentinelMissions/Sentinel1.html); [NASA/JPL OPERA Radiometric Terrain Corrected product](https://www.jpl.nasa.gov/go/opera/products/rtc-product/).
