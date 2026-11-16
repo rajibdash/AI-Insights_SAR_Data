@@ -1,0 +1,8 @@
+{
+  "bias": -4.0,
+  "weights": {
+    "before_db": 0.0,
+    "after_db": -0.2,
+    "delta_db": -0.3
+  }
+}
