@@ -793,3 +793,154 @@ Side-looking radar geometry can produce foreshortening, layover, and radar shado
 The sequence and optional operations should be selected from the product documentation and processing tool guidance for the chosen mission. In particular, do not assume that every SAR model requires speckle filtering, radiometric terrain flattening, or conversion to decibels.
 
 **Technical references:** [NASA Earthdata SAR Handbook](https://www.earthdata.nasa.gov/learn/earth-observation-data-basics/sar-handbook); [Copernicus Sentinel-1 product guide](https://sentiwiki.copernicus.eu/web/s1-products); [Copernicus Data Space Sentinel-1 documentation](https://documentation.dataspace.copernicus.eu/Data/SentinelMissions/Sentinel1.html); [NASA/JPL OPERA Radiometric Terrain Corrected product](https://www.jpl.nasa.gov/go/opera/products/rtc-product/).
+
+## 14. Simulation and Test Design for SAR AI Workflows
+
+This appendix defines a reproducible simulation plan for the flood, maritime, and infrastructure-protection workflows in Section 12. It extends the proposed architecture with testable synthetic inputs; it does not change the earlier workflow descriptions, claim that an operational simulator exists, or treat synthetic performance as evidence of real-world accuracy.
+
+### 14.1 Simulation objectives and boundaries
+
+Use simulation to verify pipeline behavior, interfaces, provenance, uncertainty handling, and known-answer behavior under controlled conditions. Synthetic fixtures are useful for finding implementation defects and exercising rare cases; they cannot establish operational model accuracy, sensor equivalence, or safety certification. Validate every deployment model separately against appropriately licensed, representative real observations and independent labels.
+
+Keep three simulation fidelity levels distinct:
+
+| Level | Generated input | Appropriate use | Not established by this level |
+|---|---|---|---|
+| A. Product-level fixture | Raster-like GRD/RTC intensity arrays, SLC-like complex arrays, vectors, masks, and realistic metadata | Pipeline, API, spatial-join, policy, and model-interface tests | Radar focusing, calibration, or sensor fidelity |
+| B. Physics-informed product simulator | Terrain/target scattering, acquisition geometry, polarization response, speckle/noise, and selected distortions rendered into product-like grids | Robustness and controlled model experiments with known truth | Full instrument or provider-product equivalence |
+| C. Echo/processor simulation | Modeled complex echoes, platform trajectory, waveform, sampling, and processing into focused products | Processor research and end-to-end SAR signal-chain tests | Mission validation unless independently qualified against measured data |
+
+Start with Level A for continuous-integration tests and use Level B for scenario robustness. Level C is optional and should be a separately qualified project; do not make a simplified image-level generator look like a validated raw-echo simulator. Generated products must identify their level in metadata and must never be mixed with operational observations without an explicit synthetic-data marker.
+
+### 14.2 Shared synthetic-data design
+
+Create one fixture package per deterministic scenario, with a manifest that records:
+
+| Manifest group | Required fields |
+|---|---|
+| Identity and reproducibility | `fixture_id`, schema version, generator version, fidelity level, seed, creation time, and content hashes |
+| Scene and acquisition | AOI/grid/CRS, dimensions, pixel spacing, acquisition interval, orbit/look direction, incidence-angle range, mode, polarization/band order, product type, and units |
+| Processing | Calibration/value domain, preprocessing operations and parameters, DEM/reference versions, masks, and processing version |
+| Truth and labels | Label schema, class meanings, valid/unknown coverage, geometry/time of each simulated event, and label-generation method |
+| Split and intended use | Train/validation/test assignment, held-out event/region identifier, permitted test purpose, and known simulator limitations |
+
+Generate each fixture in a documented sequence:
+
+1. Define a local projected grid and synthetic scene geometry: terrain slope, land cover, coastline/water, roads, buildings, sites, vessels, and/or infrastructure targets as appropriate. Store vector ground truth separately from generated imagery.
+2. Set acquisition metadata before image generation. Include supported and intentionally unsupported combinations so validation behavior can be tested; do not infer product properties from file names.
+3. Assign class- and polarization-dependent scattering parameters, then render the baseline scene and event scene using the same grid and declared acquisition geometry. For Level B, add controlled layover/shadow or occlusion masks where modeled; mark unmodeled areas as unknown rather than inventing valid returns.
+4. Add declared sensor/product effects. For example, use complex speckle for single-look complex fixtures and a suitable positive-valued multilook intensity distribution for GRD-like fixtures; add configurable thermal-noise floor, quantization, geolocation offsets, missing tiles, and acquisition-to-acquisition variation. Record every simplification.
+5. Generate labels from the latent scene geometry and event state, not from thresholds on the rendered images. Include permanent-water, event-water, non-event change, stable targets, false-look-alikes, and unknown/no-data states as relevant.
+6. Emit the product arrays, masks, vectors, acquisition metadata, independent reference/telemetry records, expected evidence contract, and checksums atomically. Never derive expected answers from the AI output under test.
+7. Freeze a fixture version and split by entire simulated events/scenes before creating tiles. Tiles from the same scene, event, or temporal stack must not leak across train, validation, and test.
+
+Use fixed seeds and stable ordering for repeatability. Record the numeric tolerance for floating-point outputs and test stable downstream classes/reason codes separately. Keep training fixtures separate from locked evaluation fixtures; retain small hand-authored known-answer cases for boundary conditions. Synthetic thresholds and object distributions are test parameters, not recommended operational thresholds.
+
+### 14.3 End-to-end simulation harness
+
+Drive the same observable stages as the reference architecture: catalog discovery/reconciliation, immutable ingest and checksums, product/metadata validation, preprocessing, inference or rule-based baseline, quality/uncertainty gating, spatial/dependency fusion, decision-contract validation, publication, and correction/retraction handling.
+
+Each run should capture a run ID, fixture and source hashes, stage start/end times, queue/retry state, software/model/preprocessing/policy versions, coverage, warnings, and final lifecycle state. Provide a replay mode that injects duplicate, delayed, revised, out-of-order, corrupt, and missing inputs. Use isolated synthetic asset inventories, synthetic AIS/telemetry, and fake notification sinks; do not send simulated outputs to real dispatch, NOC, maritime, or infrastructure-control systems.
+
+The harness must assert both positive and negative behavior:
+
+- Supported, valid inputs produce a traceable result with expected geometry, units, timestamps, quality state, and provenance.
+- Incompatible, stale, incomplete, or low-quality inputs produce visible `unknown`, `insufficient_evidence`, `quarantined`, or `failed` states according to policy; they must not be converted into a reassuring no-hazard result.
+- Duplicate inputs are idempotent. A revised input creates a linked new result and supersedes or retracts affected prior evidence without erasing history.
+- Partial coverage is labeled with its exact footprint; it is never published as complete coverage.
+- Probabilities, measurement quality, priority, association status, and operational confirmation remain distinct fields.
+- Every recommendation is reproducible from its recorded input and version manifest within the declared numeric tolerance.
+
+### 14.4 Scenario fixtures and simulated workflow behavior
+
+#### A. Flood and disaster-change simulation
+
+**Fixture generation.** Create paired pre-event and event-time intensity scenes with matching and mismatched acquisition metadata. Include calm open water, permanent water, newly inundated water, wet soil, changed vegetation, urban blocks with both dark and double-bounce-like responses, roads/bridges, critical-site footprints, power assets, fiber routes, and access roads. Add sloped terrain, shadow/layover/no-data regions, imperfect alignment, noise/speckle, and variable valid coverage. Generate separate truth layers for permanent water, event water, non-water, candidate surface change, and unknown. Optional coherence fixtures must be complex SLC pairs with documented compatibility and separate coherence truth; do not make GRD arrays serve as phase data.
+
+**Simulation steps.**
+
+1. Submit an incident ID, AOI, event window, critical-asset inventory, compatible pre-event reference, and versioned freshness/quality policy.
+2. Ingest both products and verify product type, time, polarization, geometry, masks, checksums, and reference compatibility. Exercise quarantine for mismatches and a visible coverage gap for missing tiles.
+3. Apply the declared backscatter preprocessing once, align grids, preserve masks, and create the declared model channels. Test linear-power and dB fixtures independently.
+4. Run threshold/change baselines and the flood model; run change screening as a separate branch. Keep `event_water`, `candidate_surface_change`, and `unknown` outputs separate.
+5. Compare valid-area predictions with latent labels. Summarize event-water overlap over asset footprints and routes using valid and unknown area separately; propagate shared-risk evidence through the synthetic dependency graph.
+6. Publish a preliminary, versioned advisory with acquisition age, coverage, uncertainty, source/model/policy versions, and reason codes. Exercise analyst approval, correction, and stale-result handling.
+
+| Injected case | Required simulation assertion |
+|---|---|
+| New open-water flood with valid matched reference | Event-water evidence appears in the known area; exposed assets receive an exposure advisory, not an outage confirmation |
+| Permanent water or wet-soil change | The fixture tests false-positive control and class distinction; uncertain pixels may abstain |
+| Urban/vegetated flood signature differs from open water | Output retains scenario-specific uncertainty; a dark-pixel-only assumption is not treated as ground truth |
+| Shadow/no-data overlaps an asset or route | The affected area is `unknown`/insufficient evidence, not non-flooded or safe |
+| Incompatible polarization/orbit/grid or missing reference | The run is rejected, quarantined, or degraded per explicit policy; no silent substitute reference |
+| Flood overlap affects a primary and physically shared backup route | Dependency analysis reports common-cause exposure without claiming either route is failed |
+| Revised scene or new valid coverage changes a prior map | A new linked release and correction/retraction are emitted; prior provenance remains queryable |
+
+Report flood precision, recall, and IoU on valid labeled pixels by event and scene type; critical-asset exposure misses; false inspection recommendations; valid/unknown area fractions; boundary/geolocation error; and acquisition/publication-to-advisory latency. Do not select acceptance thresholds from the same fixtures used to tune the model.
+
+#### B. Maritime vessel and suspected-slick simulation
+
+**Fixture generation.** Render synthetic sea backgrounds with spatially variable clutter, coastline, ports, platforms, islands, wakes, rain/front-like artifacts, and low-wind dark regions. Add vessel-like returns across configured apparent sizes and contrasts, including crowded, coastal, moving, and missed-detection cases. Generate time-stamped AIS tracks with interpolation error, stale reports, receiver coverage gaps, ambiguous candidates, and late-arriving messages. Add slick-like dark polygons with known geometry and confounders; generate independent labels for vessel detections, association truth, slick-like appearance, and confirmed/unconfirmed verification. Do not label every unmatched vessel as non-cooperative or every dark patch as oil.
+
+**Simulation steps.**
+
+1. Register a synthetic AOI, acquisition time, target-detection scope, authorized-review role, and explicit environmental/coverage limits.
+2. Ingest SAR-like imagery, geometry/quality layers, AIS, and environmental records while retaining each source's event, report, and ingestion timestamps.
+3. Validate image support; run the vessel and slick branches independently with local-background baselines and separate model/quality outputs.
+4. Associate candidate vessel detections to tracks at acquisition time using configured time/position uncertainty and receiver coverage. Preserve multiple plausible matches; do not force a nearest candidate.
+5. Assess slick-like features against environmental context and look-alike classes. If drift is simulated, publish the modeled forecast and uncertainty separately from observed SAR geometry.
+6. Create evidence-linked synthetic cases for analyst review. Inject late AIS, revised tracks, analyst-confirmed/rejected/inconclusive outcomes, and case correction events.
+
+| Injected case | Required simulation assertion |
+|---|---|
+| Valid vessel detection with a unique time-consistent track | Association is `matched` with provenance and uncertainty; it does not assert identity beyond available evidence |
+| No match with receiver coverage gaps or stale AIS | State is `insufficient_AIS` or equivalent, not a claim that AIS was deliberately disabled |
+| Multiple plausible tracks or overlapping detections | State remains `ambiguous`; competing candidates and reason are retained |
+| Dark slick-like region under unsuitable or missing environmental context | Confidence is gated or the result abstains; output remains suspected, not confirmed oil |
+| Port/platform/wake/rain look-alike | False-alarm behavior is measured and the feature is not automatically attributed to a vessel or pollution |
+| Late AIS or analyst correction | Case is revised with history and linked evidence; old match/assessment is not silently overwritten |
+| Simulated output reaches a real delivery adapter | Test must fail closed; the harness may only use a fake sink |
+
+Report vessel precision/recall by apparent size and sea/clutter condition, false detections per unit valid sea area, geolocation error, association accuracy and ambiguity rate, coverage-gap behavior, slick object/pixel precision-recall and area error, look-alike false alarms, analyst verification yield, and correction latency. Treat legal status, identity, oil composition, thickness, volume, and liability as outside the simulator's inferred outputs.
+
+#### C. Infrastructure deformation and stability simulation
+
+**Fixture generation.** Create a time-ordered stack of compatible complex SLC-like samples and metadata, with stable and moving scatterers, declared wavelength and LOS convention, reference region/epoch, and known displacement histories. Encode a specified LOS displacement as a phase term using the documented convention, e.g. `phi_deformation = 4 * pi * d_LOS / lambda` with sign matched to the chosen processor convention. Add wrapped phase, thermal/phase noise, temporal decorrelation, atmospheric-like spatial delay, residual topographic/orbit terms, missing dates, low-coherence areas, and selected unwrapping/component failures. Include asset footprints, adjacent-ground targets, reference targets, and independent synthetic GNSS/leveling measurements with their own noise and sampling. Keep the latent displacement truth independent of the inference output.
+
+**Simulation steps.**
+
+1. Define the engineering question, target assets, allowable review actions, LOS geometry/sign, reference definition, and synthetic independent-measurement schedule.
+2. Validate stack compatibility and coverage; reject unsupported GRD/RTC input for phase processing. Build a documented interferogram network with gaps and a connected-component state.
+3. Process interferograms/coherence and invert the time series using a fixed synthetic processor configuration; carry reference, units, observation times, residuals, quality masks, and uncertainty.
+4. Compare recovered LOS series with latent truth and independent reference measurements using compatible time/reference conventions. Associate evidence with actual simulated target footprints and uncertainty, not merely the nearest asset point.
+5. Apply robust trend/change rules and optional anomaly inference only to quality-approved series. Publish separate `movement_estimate`, `measurement_quality`, `anomaly_score`, and `engineering_priority`.
+6. Exercise a new acquisition and a processor/reference revision; publish a consistent revised series and reassess linked recommendations without erasing prior versions.
+
+| Injected case | Required simulation assertion |
+|---|---|
+| Stable coherent target with no imposed motion | Estimated trend is within the fixture's declared tolerance; reference and uncertainty are present |
+| Known gradual LOS motion with adequate coherence | Sign, units, trend, and temporal support agree with latent truth within a predeclared tolerance |
+| Low coherence, missing dates, or disconnected component | Result is masked/insufficient evidence; missing movement is not represented as zero |
+| Wrapped-phase discontinuity or injected unwrapping error | Quality/network checks flag or isolate the affected estimate; it does not become an unqualified movement alarm |
+| Atmospheric-like delay shared across the scene | Sensitivity and residual checks are reported; the effect is not automatically attributed to the asset |
+| Target near, but not on, a structure footprint | Association uncertainty is retained; nearby ground motion is not asserted as structural deformation |
+| GRD/RTC supplied to phase branch | Input is rejected with a clear product-type error; phase is not reconstructed from intensity |
+| Revised reference or historical correction | New series version records the changed reference/inputs and links affected prior decisions |
+
+Report LOS displacement/velocity error and bias against latent and independent truth, uncertainty calibration, coherent/usable coverage, reference sensitivity, false investigation recommendations per asset/time, missed injected movement episodes, detection delay, robustness to gaps/atmosphere/unwrapping errors, and review workload. Set tolerances from product resolution, simulator behavior, and intended use; do not present simulation error as a real-world millimeter-accuracy guarantee or failure prediction.
+
+### 14.5 Test levels, acceptance, and release guidance
+
+| Test level | Test focus | Minimum evidence |
+|---|---|---|
+| Unit | Calibration/domain conversions, masks, time ordering, geometry/CRS, metrics, thresholds, uncertainty and contract validators | Hand-calculated known-answer cases, invalid-value cases, and threshold-boundary tests |
+| Component | Preprocessor, inference interface, asset/AIS association, InSAR inversion interface, policy and publisher | Deterministic fixtures with explicit expected outputs and failure states |
+| Integration | Catalog, object store, queue, spatial store, graph, versioning, and fake notification sink | Idempotency, retries, quarantine/dead-letter behavior, revision links, and atomic manifests |
+| End-to-end replay | Full per-scenario workflow on synthetic event timelines | Provenance completeness, correct lifecycle, timestamped latency, coverage and expected reason codes |
+| Robustness | Seeded variation, missing/invalid inputs, sensor/scene shifts and edge cases | Per-condition metrics, abstention/unknown behavior, and no unsafe success-shaped fallback |
+| Performance/reliability | Representative tile/stack sizes, surge queues, retries, and dependency failures | p50/p95/p99 and deadline misses, queue age, failure rate, resource use, and coverage completeness |
+| Real-data qualification | Held-out measured observations, independent labels, operator/engineering review | Separate evidence package; synthetic results cannot substitute for this gate |
+
+Before each run, freeze the scenario configuration, fixture hashes, software/runtime, model, preprocessing, policy, acceptance thresholds, and random seeds. Run known-answer tests first, then scenario suites, replay/failure injection, repeatability checks, and resource/latency tests. Preserve complete run manifests and failures. Any change to model, preprocessing, reference data, thresholds, or contract requires rerunning the affected suites and documenting the comparison.
+
+Acceptance thresholds must be declared by the responsible operational or engineering owner before evaluation and tied to the intended action and valid coverage. A test passes only when both the desired detections and required abstentions/failure states pass. A high pixel or detection score cannot waive critical-asset miss, unknown-coverage, provenance, safety-boundary, or delivery-isolation failures. A production-readiness decision still requires held-out real data, independent validation, access/security review, operational approval, and the phased acceptance evidence in Section 10.
