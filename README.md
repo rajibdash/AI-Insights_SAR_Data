@@ -944,3 +944,15 @@ Report LOS displacement/velocity error and bias against latent and independent t
 Before each run, freeze the scenario configuration, fixture hashes, software/runtime, model, preprocessing, policy, acceptance thresholds, and random seeds. Run known-answer tests first, then scenario suites, replay/failure injection, repeatability checks, and resource/latency tests. Preserve complete run manifests and failures. Any change to model, preprocessing, reference data, thresholds, or contract requires rerunning the affected suites and documenting the comparison.
 
 Acceptance thresholds must be declared by the responsible operational or engineering owner before evaluation and tied to the intended action and valid coverage. A test passes only when both the desired detections and required abstentions/failure states pass. A high pixel or detection score cannot waive critical-asset miss, unknown-coverage, provenance, safety-boundary, or delivery-isolation failures. A production-readiness decision still requires held-out real data, independent validation, access/security review, operational approval, and the phased acceptance evidence in Section 10.
+
+## License
+
+This repository is licensed under the GNU General Public License, version 3.0 (GPL-3.0). The license explains the rights and conditions for using, modifying, and redistributing the materials; see [LICENSE](LICENSE) for the complete text.
+
+## Citation
+
+If you use or refer to this guide, please cite:
+
+> rajibdash. (2026). *AI Insights from SAR for Mission-Critical Communications* [Technical guide]. GitHub. https://github.com/rajibdash/AI-Insights_SAR_Data
+
+This citation identifies the repository and guide; it is not a citation for any individual dataset or source listed in Section 11.
