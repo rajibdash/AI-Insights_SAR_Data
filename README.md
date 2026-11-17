@@ -956,3 +956,41 @@ If you use or refer to this guide, please cite:
 > rajibdash. (2026). *AI Insights from SAR for Mission-Critical Communications* [Technical guide]. GitHub. https://github.com/rajibdash/AI-Insights_SAR_Data
 
 This citation identifies the repository and guide; it is not a citation for any individual dataset or source listed in Section 11.
+
+## 15. End-to-end SAR dataset collection and intelligence generation
+
+This section describes a proposed workflow, not a system or dataset already implemented by this repository. "Generating a dataset" means collecting existing SAR acquisitions and producing documented, analysis-ready examples from them; it does not mean that software can create a new real-world radar observation. A new observation requires a satellite acquisition. Archive searches can find available scenes, while commercial tasking may request a collection subject to the provider's acceptance, acquisition geometry, coverage, downlink, and delivery terms (Section 4).
+
+### 15.1 Define what the dataset is meant to answer
+
+Before collecting data, define the operational question and the event or area of interest. For example, a flood-exposure dataset might ask which communication sites and routes overlap with newly observed flood water. Specify the geographic bounds, event and comparison time windows, asset types, decision owner, and evidence needed to answer the question. Record the intended use and limitations so that examples collected for flood mapping are not later treated as labels for service outages.
+
+### 15.2 Find and register SAR observations
+
+Search an appropriate archive, such as Sentinel-1 through Copernicus Data Space or ASF, for acquisitions covering the area and time window. Select the product type needed for the analysis: GRD imagery can support backscatter workflows, while SLC data is needed for workflows that use complex phase, such as interferometric displacement analysis. Check acquisition mode, polarization, relative orbit where relevant, usable coverage, product version, and compatibility with the comparison observation or baseline. Archive availability and repeat coverage depend on the mission and location; do not promise a particular observation time or cadence.
+
+Keep the original downloaded product unchanged. For each scene, record its source and identifier, product type and version, area and acquisition time, polarization and orbit metadata where available, license or access conditions, checksum, and download/ingestion time. Record processing and auxiliary-data versions for derived products. A catalog such as STAC can support discovery and metadata exchange where the provider offers it [6]. Preserve these records so that a later result can be traced to its observation and reproduced.
+
+### 15.3 Quality-check and prepare analysis inputs
+
+Check that each product is complete and covers the intended area. Verify its metadata and quality information, and route missing, incompatible, or unsupported products to a visible review or quarantine process rather than silently substituting another scene. Apply the processing appropriate to the source product: for example, generate calibrated, terrain-corrected backscatter for an intensity workflow, or use a suitable co-registered complex-data and InSAR workflow for displacement analysis (Sections 3.5 and 3.6). Do not repeat corrections that are already present in an input product.
+
+For each derived product, retain the processor/configuration and auxiliary-data versions, coordinate reference and grid information, valid-data and quality masks, and a link to the source observation. Keep invalid or unobserved pixels distinguishable from a negative detection. If simulated SAR is used to test a pipeline, label it as synthetic and keep it separate from real acquisitions and real-event evaluation data (Section 4).
+
+### 15.4 Add labels and communications context
+
+Create labels only for a defined target and record how each label was obtained, its time and location, and its uncertainty or limitations. For flood mapping, classes may distinguish event water, permanent water, non-water, and unknown or invalid areas, as described in Section 5. Where possible, check labels against independent evidence such as field reports or other suitable observations. A product derived from the same SAR input can be a useful comparison, but is not independent ground truth merely because it has a different product name.
+
+To turn a hazard map into communications intelligence, join the time- and location-relevant SAR result with authorized operator context: asset locations and footprints, network/service dependencies, and available alarms, performance or outage records. Preserve the provenance and timestamps of both the geospatial and operator data. An exposure intersection is evidence of potential physical exposure; it does not establish that equipment or a service has failed. If representative, time-aligned outage and cause labels are unavailable, report physical exposure and uncertainty rather than inventing a service-failure label or probability (Section 5).
+
+### 15.5 Assemble, split, and document the dataset
+
+Package each example as a traceable association between the source SAR observation, the selected analysis-ready product and masks, the event/area, any label and its provenance, and the relevant asset or operator evidence where access is authorized. Include a dataset manifest that records source identifiers, product and processing versions, timestamps, label definitions, known gaps, and applicable access or license restrictions. The manifest makes it possible to distinguish missing coverage from a true negative and to reconstruct which inputs supported a result.
+
+Separate training, tuning, and evaluation data by event and geography, with time-based separation where appropriate. Avoid randomly splitting neighboring image tiles from the same scene across these groups, since near-duplicate observations can make evaluation overstate performance. Report which events, locations, product types, and valid-data areas are represented; do not imply that a benchmark or synthetic example proves performance on new events.
+
+### 15.6 Produce and maintain intelligence outputs
+
+Run the selected analysis on quality-approved products, then summarize hazard evidence against asset footprints, routes, and their documented dependencies. A resulting intelligence record should distinguish at least the observation and acquisition time, mapped hazard or change, valid coverage and uncertainty, affected or potentially exposed assets/dependencies, and the rule or model version that produced the finding. Keep "observed exposure," "network telemetry state," and "operator-verified status" as separate evidence fields. Mark areas without a usable observation as unknown, not safe.
+
+Publish recommendations for human/operator review with the supporting evidence and reasoning. For example, a fresh, quality-approved flood observation overlapping an asset can support an inspection recommendation; it is not by itself proof of an outage. Capture later operator dispositions, field observations, and confirmed failure/restoration records as new, provenance-tracked evidence. Add them to future dataset versions only after their meaning and quality are reviewed. Keep model and dataset versions traceable, validate updates on held-out events, and do not describe this proposed loop as autonomous or already operational.
